@@ -10,7 +10,11 @@
 //    -Adapted to get data for more features of FitBit.
 //    -Friendlier setup UI.
 // Modifications 2024 - Tim Goodwyn - timgoodwyn.me.uk
-//
+// Modifications 2025 - Paslum - paslum.de
+//    - Added some APIs
+//    - Added UI styling
+//    - Rewrote some code to make it more readable + some reusability
+//    - Added Auto-Sync
 // Current version on GitHub: https://github.com/JKybett/GoogleFitBit/blob/main/FitBit.gs
 //
 // This is a free script: you can redistribute it and/or modify
@@ -117,21 +121,6 @@ const apiDefinitions = {
     scope: "cardio_fitness",
     url: "https://api.fitbit.com/1/user/-/cardioscore/date/[date].json",
   },
-  food: {
-    fields: {
-      summary: [
-        "calories",
-        "carbs",
-        "fat",
-        "fiber",
-        "protein",
-        "sodium",
-        "water",
-      ],
-    },
-    scope: "nutrition",
-    url: "https://api.fitbit.com/1/user/-/foods/log/date/[date].json",
-  },
   heartRateVariability: {
     fields: {
       hrv: {
@@ -150,7 +139,7 @@ const apiDefinitions = {
         // nested values deeper - at the moment we get away with it.
         // TODO: cope with multiple sleep logs in a day - want the main sleep if there is one
         // TODO: array entries in levels:data
-        0: ["duration", "endTime", "startTime"],
+        0: ["duration", "endTime", "startTime","efficiency"],
       },
       summary: {
         stages: ["deep", "light", "rem", "wake"],
@@ -161,16 +150,35 @@ const apiDefinitions = {
   },
   weight: {
     fields: {
-      weight: ["bmi", "weight"],
+      weight: {
+        0: ["bmi","weight"],
+      },
     },
     scope: "weight",
     url: "https://api.fitbit.com/1/user/-/body/log/weight/date/[date].json",
+  },
+  spo2: {
+    fields: {
+      value: ["avg","min","max"],
+    },
+    scope: "oxygen_saturation",
+    url: "https://api.fitbit.com/1/user/-/spo2/date/[date].json",
+  },
+  fat: {
+    fields: {
+      fat: {
+        0: ["fat"],
+      },
+    },
+    scope: "weight",
+    url: "https://api.fitbit.com/1/user/-/body/log/fat/date/[date].json",
   },
 };
 
 // Assumes that leaf field names are unique between API calls (which is true in the existing version)
 // May need to introduce addressing by path if it's ambiguous
 function getFieldNames(obj) {
+  if (typeof obj !== 'object' || obj === null) return [];
   if (Array.isArray(obj)) {
     return obj;
   } else {
@@ -182,6 +190,7 @@ function getFieldNames(obj) {
   }
 }
 
+
 const allFields = Object.values(apiDefinitions)
   .map(({ fields }) => getFieldNames(fields))
   .reduce((prev, current) => {
@@ -191,20 +200,39 @@ const allFields = Object.values(apiDefinitions)
 
 /* * * * * * * * * * * End of API Definitions * * * * * * * * * * * * */
 
+function setCell(row, column, value) {
+  try {
+    var doc = SpreadsheetApp.openById(getProperty("spreadSheetID"));
+    doc.getRange(`R${row}C${column}`).setValue(value);
+    console.info(`Cell R${row}C${column} has been set`);
+  } catch (err) {
+    console.error(`Cell R${row}C${column} could not be set: ${err}`);
+  }
+  return;
+}
+
+function defaultHTML(head, body) {
+  return `
+  <!DOCTYPE html>
+  <html>
+    <head>
+      ${head}
+    </head>
+    <body>
+      ${body}
+      </br></br>
+      <div style='text-align: right;font-style: italic;'>By <a href='https://jkybett.uk' target='_blank'>JKybett</a></div>
+    </body>
+  </html>
+  `;
+}
+
 /*
   Used to display information to the user via cell B3 to let them know that scripts are actively running.
 */
-function working(stepStr = "Working") {
-  getSheet().getRange("R3C2").setValue(stepStr);
+function setStatus(currentStatus = "unknown") {
+  setCell(3,2,currentStatus);
 }
-
-/*
-  Used to display information to the user via cell B3 to let them know that scripts have stopped actively running.
-*/
-function done() {
-  getSheet().getRange("R3C2").setValue("Ready");
-}
-
 /*
 
 */
@@ -249,13 +277,8 @@ function getSheet() {
 
 */
 function setSheet(sheet) {
-  if (sheet == null) {
-    setProperty("sheetID", "");
-    setProperty("spreadSheetID", "");
-  } else {
-    setProperty("sheetID", sheet.getSheetId().toString());
-    setProperty("spreadSheetID", sheet.getParent().getId().toString());
-  }
+  setProperty("sheetID", sheet ? sheet.getSheetId().toString() : '');
+  setProperty("spreadSheetID", sheet ? sheet.getParent().getId().toString() : '');
 }
 
 /*
@@ -270,10 +293,7 @@ function setConsumerKey(consumerKey) {
 */
 function getConsumerKey() {
   var consumer = getProperty(CONSUMER_KEY_PROPERTY_NAME);
-  if (consumer == null) {
-    consumer = "";
-  }
-  return consumer;
+  return consumer ? consumer : '';
 }
 
 /*
@@ -288,10 +308,7 @@ function setConsumerSecret(secret) {
 */
 function getConsumerSecret() {
   var secret = getProperty(CONSUMER_SECRET_PROPERTY_NAME);
-  if (secret == null) {
-    secret = "";
-  }
-  return secret;
+  return secret ? secret : '';
 }
 
 function clearService() {
@@ -394,7 +411,7 @@ function saveSetup(e) {
   })[0];
   //problemPrompt("'"+e.sheetID+"'");
   setSheet(doc);
-  working();
+  setStatus("working");
   doc.getRange("R2C2").setValue(new Date(e.year, e.month - 1, e.day));
   console.log(e);
   setConsumerKey(e.consumerKey);
@@ -427,22 +444,26 @@ function saveSetup(e) {
   }
   i = 0;
   for (const [key, value] of Object.entries(titles)) {
-    doc.getRange("R4C" + (2 + i)).setValue(value);
+    setCell(3, 2+i,value);
     i++;
   }
-  doc.getRange("R1C1").setValue("Sheet last synced: never");
-  doc.getRange("R2C1").setValue("Start Date:");
-  doc.getRange("R3C1").setValue("Status:");
-  doc.getRange("R4C1").setValue("Date");
+  setCell(1,1,"Sheet last synced: never");
+  setCell(2,1,"Start Date:");
+  setCell(3,1,"Status:");
+  setCell(4,1,"Date");
   authWindow();
-  done();
+  setStatus("Ready");
 }
-
 /*
 
 */
 function sync() {
   syncDate();
+}
+function syncYesterday() {
+  var yesterday = new Date();
+  yesterday.setDate(yesterday.getDate() - 1);
+  syncDate(yesterday);
 }
 
 /*
@@ -477,42 +498,30 @@ function syncMany(firstDate, secondDate) {
 /*
   function sync() is called to download all desired data from Fitbit API to the spreadsheet
 */
-function syncDate(date = null) {
-  working();
-  if (date == null) {
-    date = new Date();
-  }
-  var dateString =
-    date.getFullYear() +
-    "-" +
-    ("00" + (date.getMonth() + 1)).slice(-2) +
-    "-" +
-    ("00" + date.getDate()).slice(-2);
+function syncDate(date = new Date()) {
+  setStatus("working");
+  var dateString = Utilities.formatDate(date, Session.getScriptTimeZone(), 'yyyy-MM-dd');
   var doc = getSheet();
   var workingRow = rowFromDate(date);
   if (workingRow < 5) {
     problemPrompt(
       "The date given is before your defined Earliest Date. Extending before this date is not supported and causes problems."
     );
-    done();
+    setStatus("Ready");
     return;
   }
-  working("Working row: " + workingRow);
-  // if the user has never performed setup, do it now
-  if (!isConfigured()) {
-    setup();
-    return;
-  }
+  setStatus("Working row: " + workingRow);
+
   doc.setFrozenRows(4);
-  doc.getRange("R1C1").setValue("Sheet last synced: " + new Date());
-  doc.getRange("R4C1").setValue("Date");
+  setCell(1,1,"Sheet last synced: " + new Date());
+  setCell(4,1,"Date");
   var options = {
     headers: {
       Authorization: "Bearer " + getFitbitService().getAccessToken(),
       method: "GET",
     },
   };
-  doc.getRange("R" + workingRow + "C" + 1).setValue(dateString);
+  setCell(workingRow,1,dateString);
 
   const allFieldsUsed = doc.getRange("4:4").getValues()[0];
 
@@ -531,6 +540,7 @@ function syncDate(date = null) {
         options
       );
       const stats = JSON.parse(result.getContentText());
+      console.log(stats);
       console.log(`Logging ${apiName}...`);
 
       forEachRequiredField(
@@ -546,8 +556,7 @@ function syncDate(date = null) {
       );
     }
   });
-
-  done();
+  setStatus("Ready");
 }
 
 /*
@@ -585,6 +594,7 @@ function forEachRequiredField(statsObj, fieldObj, apiFieldsNeeded, fieldFn) {
 /*
 
 */
+
 function firstRun() {
   const doc = SpreadsheetApp.getActiveSpreadsheet();
   const contentHTML = `
@@ -655,12 +665,10 @@ function firstRun() {
     Then click the button below to move on to the next step:
     <form id="form">
       <input type="hidden" id="task" name="task" value="FitBitAPI">
-      <input class="normWid" type="button" value="Next" onclick="
-        google.script.run.withSuccessHandler(function(value){
-        }).submitData(form);document.getElementById('done').style.display = 'block';">
+      <input class="normWid" type="button" value="Next" onclick="google.script.run.withSuccessHandler(function(value){}).submitData(form);document.getElementById('done').style.display = 'block';">
     </form>
     <p id="done" style="display:none;">Please wait!</p>
-    ${signature()}
+    
   </body>
 </html>`;
   const app = HtmlService.createHtmlOutput()
@@ -682,217 +690,127 @@ function setup() {
     selectSheet = getSheet();
     earliestDate = getSheet().getRange("R2C2").getValue();
   }
-  var contentHTML =
-    "" +
-    "<!DOCTYPE html>" +
-    "\n" +
-    "<html>" +
-    "\n" +
-    " <head>" +
-    "\n" +
-    "   <style>" +
-    "\n" +
-    "     label, input, select {" +
-    "\n" +
-    "       width: 45%;" +
-    "\n" +
-    "       display: inline-block;" +
-    "\n" +
-    "       vertical-align: top;" +
-    "\n" +
-    "     }" +
-    "\n" +
-    "     label{" +
-    "\n" +
-    "     }" +
-    "\n" +
-    "     input, select {" +
-    "\n" +
-    "       text-align: right;" +
-    "\n" +
-    "     }" +
-    "\n" +
-    "     .half {" +
-    "\n" +
-    "       width: 50%;" +
-    "\n" +
-    "     }" +
-    "\n" +
-    "     .full {" +
-    "\n" +
-    "       width: 100%;" +
-    "\n" +
-    "     }" +
-    "\n" +
-    "     .right {" +
-    "\n" +
-    "       text-align: right;" +
-    "\n" +
-    "       margin-right: 0px;" +
-    "\n" +
-    "     }" +
-    "\n" +
-    "     .normWid {" +
-    "\n" +
-    "       width: initial;" +
-    "\n" +
-    "     }" +
-    "\n" +
-    "     .sheetName {" +
-    "\n" +
-    "       visibility: hidden;" +
-    "\n" +
-    "     }" +
-    "\n" +
-    "   </style>" +
-    "\n" +
-    " </head>" +
-    "\n" +
-    " <body>" +
-    "\n" +
-    '   <form id="backForm">' +
-    "\n" +
-    '     <input type="hidden" id="task" name="task" value="BackToFitBitAPI">' +
-    "\n" +
-    "     <center>" +
-    '       <input class="normWid" type="button" value="<<< Setup FitBit App" onclick="' +
-    "         google.script.run" +
-    "         .withSuccessHandler(function(value){" +
-    "         })" +
-    "         .submitData(backForm);" +
-    '">' +
-    "\n" +
-    "     </center>" +
-    "   </form>" +
-    "\n" +
-    '   <form id="form">' +
-    "\n" +
-    '     <input type="hidden" id="task" name="task" value="setup">' +
-    "\n" +
-    '     <input type="hidden" id="spreadsheetID" name="spreadSheetID" value="' +
-    doc.getId().toString() +
-    '">' +
-    "\n" +
-    '     <label class="normWid">Script ID: </label>' +
-    "\n" +
-    '     <label class="normWid right">' +
-    ScriptApp.getScriptId() +
-    "</label></br></br>" +
-    "\n\n" +
-    "     <label>Fitbit OAuth 2.0 Client ID:*</label>" +
-    "\n" +
-    '     <input type="text" id="consumerKey" name="consumerKey" value="' +
-    getConsumerKey() +
-    '"></br>' +
-    "\n\n" +
-    "     <label>Fitbit OAuth Consumer Secret:*</label>" +
-    "\n" +
-    '     <input type="text" id="consumerSecret" name="consumerSecret" value="' +
-    getConsumerSecret() +
-    '"></br></br>' +
-    "\n\n" +
-    "     <label>Earliest Date (year-month-day): </label>" +
-    "\n" +
-    '     <input class="normWid" type="text" maxlength="4" size="4" id="year" name="year" value="' +
-    earliestDate.getFullYear() +
-    '">' +
-    " -\n\n" +
-    '     <input class="normWid" type="text" maxlength="2" size="2" id="month" name="month" value="' +
-    (earliestDate.getMonth() + 1) +
-    '">' +
-    " -\n\n" +
-    '     <input class="normWid" type="text" maxlength="2" size="2" id="day" name="day" value="' +
-    earliestDate.getDate() +
-    '"></br>' +
-    "\n\n" +
-    "     <label>Data Elements to download: </label>" +
-    "\n" +
-    '     <select id="loggables" name="loggables" multiple>' +
-    "\n";
-  for (var resource in allFields) {
-    selected = allFields.indexOf(allFields[resource]) > -1 ? " selected" : "";
-    contentHTML +=
-      '       <option value="' +
-      allFields[resource] +
-      '"' +
-      selected +
-      ">" +
-      allFields[resource] +
-      "</option>" +
-      "\n";
-  }
-  contentHTML +=
-    "     </select></br></br>" +
-    "\n" +
-    "     <label>Sheet to store data: </label>" +
-    "\n" +
-    '     <select id="sheets" onchange=\'' +
-    "       var val = this.value;" +
-    '       document.getElementById("newSheet").value="1";' +
-    '       document.getElementById("sheetID").value=val=="new"?"":val;' +
-    '       var hiders = document.getElementsByClassName("sheetName");' +
-    '       var display=val=="new"?"visible":"hidden";' +
-    "       for (const item of hiders) {" +
-    "         item.style.visibility = display;" +
-    "       }" +
-    "'>" +
-    "\n";
-  if (sheets.length > 0) {
-    for (var i = 0; i < sheets.length; i++) {
-      selected =
-        sheets[i].getSheetId() == selectSheet.getSheetId() ? " selected" : "";
-      contentHTML +=
-        '       <option value="' +
-        sheets[i].getSheetId() +
-        '"' +
-        selected +
-        ">\n" +
-        "         " +
-        sheets[i].getName() +
-        "\n" +
-        "       </option>" +
-        "\n";
+  function getSheets() {
+    sheetsHTML = '';
+    for (var resource in allFields) {
+      selected = allFields.indexOf(allFields[resource]) > -1 ? " selected" : "";
+      sheetsHTML += `
+        <option value="${allFields[resource]}" ${selected}>
+          ${allFields[resource]}
+        </option>
+      `;
     }
+    return sheetsHTML;
   }
-  contentHTML +=
-    '       <option value="new">' +
-    "\n" +
-    "       + New sheet" +
-    "\n" +
-    "       </option>" +
-    "\n" +
-    "     </select></br>" +
-    "\n" +
-    '     <label class="sheetName">Name:</label>' +
-    "\n" +
-    '     <input type="text" id="sheetID" name="sheetID" value="' +
-    selectSheet.getSheetId() +
-    '" class="sheetName"></br></br>' +
-    "\n" +
-    '     <input type="hidden" id="newSheet" name="newSheet" value="0">' +
-    "\n" +
-    "     <center>" +
-    '      <input class="normWid" type="button" value="Submit" onclick="' +
-    "         google.script.run" +
-    "         .withSuccessHandler(function(value){" +
-    "         })" +
-    "         .submitData(form);" +
-    "         document.getElementById('form').style.display === 'none';" +
-    "         document.getElementById('done').style.display = 'block';" +
-    '">' +
-    "\n" +
-    "     </center>" +
-    "    </form>" +
-    "\n" +
-    '	  <p id="done" style="display:none;">Please wait!</p>' +
-    "\n" +
-    signature() +
-    " </body>" +
-    "\n" +
-    "</html>";
-  var app = HtmlService.createHtmlOutput()
-    .setTitle("Setup Fitbit Download")
-    .setContent(contentHTML);
+  function getLoggables() {
+    loggablesHTML = '';
+    if (sheets.length > 0) {
+      for (var i = 0; i < sheets.length; i++) {
+        selected = sheets[i].getSheetId() == selectSheet.getSheetId() ? " selected" : "";
+        loggablesHTML += `
+        <option value="${sheets[i].getSheetId()}" ${selected}>
+          ${sheets[i].getName()}
+        </option>
+      `;
+      }
+    }
+    return loggablesHTML;
+  }
+
+  var headHTML = `
+    <style>
+      label, input, select {
+        width: 45%;
+        display: inline-block;
+        vertical-align: top;
+      }
+      label {
+
+      }
+      input, select {
+        text-align: right;
+      }
+      input, select {
+        border-style: solid;
+        border-color: #00B0B9;
+        border-radius: 12px;
+        border-width: medium;
+        backgroud-color: #86F9FF;
+        padding: 6px 12px;
+      }
+      .half {
+        width: 50%;
+      }
+      .full {
+        width: 100%;
+      }
+      .right {
+        text-align: right;
+        margin-right: 0px;
+      }
+      .normWid {
+        width: initial;
+      }
+      .sheetName {
+        visibility: hidden;
+      }
+    </style>
+  `;
+  var bodyHTML = `
+    <form id="backForm">
+      <input type="hidden" id="task" name="task" value="BackToFitBitAPI">
+      <center>
+        <input class="normWid" type="button" value="<<< Setup FitBit App" onclick="google.script.run.withSuccessHandler(function(value){}).submitData(backForm);">
+      </center>
+    </form>
+    <form id="form">
+      <input type="hidden" id="task" name="task" value="setup">
+      <input type="hidden" id="spreadsheetID" name="spreadSheetID" value="${doc.getId().toString()}">
+      <label class="normWid">Script ID: </label>
+      <label class="normWid right">
+        ${ScriptApp.getScriptId()}
+      </label></br></br>
+      <label>Fitbit OAuth 2.0 Client ID:*</label>
+      <input type="text" id="consumerKey" name="consumerKey" value="${getConsumerKey()}"></br></br>
+      <label>Fitbit OAuth Consumer Secret:*</label>
+      <input type="text" id="consumerSecret" name="consumerSecret" value="${getConsumerSecret()}"></br></br>
+      <label>Earliest Date (year-month-day): </label>
+      <input class="normWid" type="text" maxlength="4" size="4" id="year" name="year" value="${earliestDate.getFullYear()}">
+      <input class="normWid" type="text" maxlength="2" size="2" id="month" name="month" value="${earliestDate.getMonth() + 1}">
+      <input class="normWid" type="text" maxlength="2" size="2" id="day" name="day" value="${earliestDate.getDate()}"></br>
+      <label>Data Elements to download: </label>
+      <select id="loggables" name="loggables" multiple>
+        ${getSheets()}
+      </select></br></br>
+      <label>Sheet to store data: </label>
+      <select id="sheets" onchange='
+        var val = this.value;
+        document.getElementById("newSheet").value="1";
+        document.getElementById("sheetID").value=val=="new"?"":val;
+        var hiders = document.getElementsByClassName("sheetName");
+        var display=val=="new"?"visible":"hidden";
+        for (const item of hiders) {
+          item.style.visibility = display;
+        }'>
+        ${getLoggables()}
+        <option value="new">
+          New Sheets
+        </option>
+        </select></br>
+        <label class="sheetName">Name:</label>
+        <input type="text" id="sheetID" name="sheetID" value="${selectSheet.getSheetId()}" class="sheetName"></br></br>
+        <input type="hidden" id="newSheet" name="newSheet" value="0">
+        <center>
+          <input class="normWid" type="button" value="Submit" onclick="google.script.run.withSuccessHandler(function(value){}).submitData(document.getElementById('form'));
+            document.getElementById('form').style.display = 'none';
+            document.getElementById('done').style.display = 'block';
+          ">
+        </center>
+    </form>
+    <p id="done" style="display:none;">Please wait!</p>
+  `;
+
+  var app = HtmlService.createHtmlOutput().setTitle("Setup Fitbit Download").setContent(defaultHTML(headHTML, bodyHTML));
   doc.show(app);
 }
 
@@ -903,8 +821,7 @@ function authWindow() {
   var contentHTML =
     '<a href="' +
     authorizationUrl +
-    '" target="_blank">Click here to Authorize with Fitbit</a>' +
-    signature();
+    '" target="_blank">Click here to Authorize with Fitbit</a>'
   var app = HtmlService.createHtmlOutput()
     .setTitle("Setup Fitbit Download")
     .setContent(contentHTML);
@@ -918,7 +835,7 @@ function authCallback(request) {
   var app;
   var contentHTML;
   if (isAuthorized) {
-    var displayContentHTML = "Success! Please refresh the page ." + signature();
+    var displayContentHTML = "Success! Please refresh the page .";
     var displayApp = HtmlService.createHtmlOutput()
       .setTitle("All done!")
       .setContent(displayContentHTML);
@@ -940,175 +857,71 @@ function authCallback(request) {
 
 function syncCustom() {
   var doc = SpreadsheetApp.getActiveSpreadsheet();
-  var contentHTML =
-    "" +
-    "<!DOCTYPE html>" +
-    "\n" +
-    "<html>" +
-    "\n" +
-    " <head>" +
-    "\n" +
-    "   <script>" +
-    "\n" +
-    "     function submitForm(form) {" +
-    "\n" +
-    "       google.script.run" +
-    "\n" +
-    "       .withSuccessHandler(function(value){" +
-    "\n" +
-    "       })" +
-    "\n" +
-    '       document.getElementById("form").style.display === "none";' +
-    "\n" +
-    '       document.getElementById("done").style.display = "block";' +
-    "\n" +
-    "       .submitData(form);" +
-    "\n" +
-    "     }" +
-    "\n" +
-    "   </script>" +
-    "\n" +
-    " </head>" +
-    "\n" +
-    " <body>" +
-    "\n" +
-    '   <form id="form">' +
-    "\n" +
-    '     <input type="hidden" id="task" name="task" value="sync">' +
-    "\n" +
-    "     <label>Date to sync (year-month-day): </label>" +
-    "\n" +
-    '     <input type="text" maxlength="4" size="4" id="year" name="year" value="' +
-    new Date().getFullYear() +
-    '">' +
-    " -\n\n" +
-    '     <input type="text" maxlength="2" size="2" id="month" name="month" value="' +
-    (new Date().getMonth() + 1) +
-    '">' +
-    " -\n\n" +
-    '     <input type="text" maxlength="2" size="2" id="day" name="day" value="' +
-    new Date().getDate() +
-    '"></br>' +
-    "\n\n" +
-    '     <input type="button" value="Submit" onclick="' +
-    "       google.script.run" +
-    "       .withSuccessHandler(function(value){" +
-    "       })" +
-    "       .submitData(form);" +
-    "       document.getElementById('form').style.display === 'none';" +
-    "       document.getElementById('done').style.display = 'block';" +
-    '">' +
-    "\n" +
-    "   </form>" +
-    "\n" +
-    '	  <p id="done" style="display:none;">Done! Close the window!</p>' +
-    "\n" +
-    signature() +
-    " </body>" +
-    "\n" +
-    "</html>";
-  var app = HtmlService.createHtmlOutput()
-    .setTitle("Sync Specific Day")
-    .setContent(contentHTML);
+  var headHTML = `
+    <script>
+      function submitForm(form) {
+        google.script.run.withSuccessHandler(function(value){})
+        document.getElementById("form").style.display === "none";
+        document.getElementById("done").style.display = "block";
+        .submitData(form);
+      }
+    </script>
+  `;
+  var bodyHTML = `
+    <form id="form">
+      <input type="hidden" id="task" name="task" value="sync">
+      <label>Date to sync (year-month-day): </label>
+      <input type="text" maxlength="4" size="4" id="year" name="year" value="${new Date().getFullYear()}">
+      <input type="text" maxlength="2" size="2" id="month" name="month" value="${new Date().getMonth() + 1}">
+      <input type="text" maxlength="2" size="2" id="day" name="day" value="${new Date().getDate()}">
+      <input type="button" value="Submit" onclick="google.script.run.withSuccessHandler(function(value){}).submitData(form);
+          document.getElementById('form').style.display === 'none';
+          document.getElementById('done').style.display = 'block';
+      ">
+    </form>
+    <p id="done" style="display:none;">Done! Close the window!</p>
+  `;
+  var app = HtmlService.createHtmlOutput().setTitle("Sync Specific Day").setContent(defaultHTML(headHTML, bodyHTML));
   doc.show(app);
 }
 
-function problemPrompt(
-  problem = "Undefined problem.",
-  pTitle = "There was a problem!"
-) {
+function problemPrompt(problem = "Undefined problem.",) {
   var doc = SpreadsheetApp.getActiveSpreadsheet();
-  var contentHTML =
-    "" +
-    "<!DOCTYPE html>" +
-    "\n" +
-    "<html>" +
-    "\n" +
-    " <body>" +
-    "\n" +
-    "	  <p>Something went wrong! Here's the message from the code:</p>" +
-    "\n" +
-    "	  <code>" +
-    problem +
-    "</code>" +
-    "\n" +
-    "	  <p>This is just to let you know. You can close this window if you want.</p>" +
-    "\n" +
-    signature() +
-    " </body>" +
-    "\n" +
-    "</html>";
-  var app = HtmlService.createHtmlOutput()
-    .setTitle(pTitle)
-    .setContent(contentHTML);
+  var bodyHTML = `
+    <p>Something went wrong! Here's the message from the code: </p>
+    <code>
+        ${problem}
+    </code>
+    <p>This is just to let you know. You can close this window if you want.</p>
+    `;
+  var app = HtmlService.createHtmlOutput().setTitle("There was a problem!").setContent(defaultHTML('',bodyHTML));
   doc.show(app);
 }
 
-function signature() {
-  return "</br></br><div style='text-align: right;font-style: italic;'>By <a href='https://jkybett.uk' target='_blank'>JKybett</a></div>";
-}
-
-function credits() {
-  var doc = SpreadsheetApp.getActiveSpreadsheet();
-  var contentHTML =
-    "" +
-    "<!DOCTYPE html>" +
-    "\n" +
-    "<html>" +
-    "\n" +
-    " <body>" +
-    "\n" +
-    "	  <p>Something went wrong! Here's the message from the code:</p>" +
-    "\n" +
-    "	  <code>" +
-    problem +
-    "</code>" +
-    "\n" +
-    "	  <p>This is just to let you know. You can close this window if you want.</p>" +
-    "\n" +
-    signature() +
-    " </body>" +
-    "\n" +
-    "</html>";
-  var app = HtmlService.createHtmlOutput().setTitle("").setContent(contentHTML);
-  doc.show(app);
-}
+//Will follow
+function addTrigger() {return;}
 
 // function onOpen is called when the spreadsheet is opened; adds the Fitbit menu
 function onOpen() {
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
-  date = new Date();
-  var dateString =
-    date.getFullYear() +
-    "-" +
-    ("00" + (date.getMonth() + 1)).slice(-2) +
-    "-" +
-    ("00" + date.getDate()).slice(-2);
-  var menuEntries = [
-    {
-      name: "Setup",
-      functionName: "firstRun",
-    },
-  ];
+  var ui = SpreadsheetApp.getUi();
+  var menu = ui.createMenu('Fitbit')
+    .addItem('Setup', isConfigured() ? 'setup' : 'firstRun')
+    .addItem('Reset', 'clearService')
+
+  // Setup has been passed
   if (isConfigured()) {
-    menuEntries = [
-      {
-        name: "Sync Today (" + dateString + ")",
-        functionName: "sync",
-      },
-      {
-        name: "Sync (custom Date)",
-        functionName: "syncCustom",
-      },
-      {
-        name: "Setup",
-        functionName: "setup",
-      },
-      {
-        name: "Reset",
-        functionName: "clearService",
-      },
-    ];
+    menu
+      .addSeparator()
+      .addSubMenu(
+        ui.createMenu('Sync')
+          .addItem('Sync Today', 'sync')
+          .addItem('Sync Yesterday', 'syncYesterday')
+          .addItem('Sync Custom Date', 'syncCustom')
+      )
+      .addSubMenu(
+        ui.createMenu('Auto-Sync')
+          .addItem('Add Trigger', 'addTrigger')
+      );
   }
-  ss.addMenu("Fitbit", menuEntries);
+  menu.addToUi();
 }
