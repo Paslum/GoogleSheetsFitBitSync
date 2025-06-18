@@ -203,8 +203,10 @@ const allFields = Object.values(apiDefinitions)
 function setCell(row, column, value) {
   try {
     var doc = SpreadsheetApp.openById(getProperty("spreadSheetID"));
+    doc.getRange(`R${row}C${column}`).setBackground("green");
     doc.getRange(`R${row}C${column}`).setValue(value);
     console.info(`Cell R${row}C${column} has been set`);
+    doc.getRange(`R${row}C${column}`).setBackground("white");
   } catch (err) {
     console.error(`Cell R${row}C${column} could not be set: ${err}`);
   }
@@ -216,6 +218,17 @@ function defaultHTML(head, body) {
   <!DOCTYPE html>
   <html>
     <head>
+    <style>
+      input, select {
+          border-style: solid;
+          border-color: #00B0B9;
+          border-radius: 12px;
+          border-width: medium;
+          backgroud-color: #86F9FF;
+          padding: 6px 12px;
+          margin: 2px;
+      }
+    </style>
       ${head}
     </head>
     <body>
@@ -390,6 +403,9 @@ function submitData(form) {
     case "FitBitAPI":
       setup();
       break;
+    case "addTrigger":
+      manageTrigger.add(form);
+      break;
     //case "credits" : credits();break;
   }
 }
@@ -412,7 +428,7 @@ function saveSetup(e) {
   //problemPrompt("'"+e.sheetID+"'");
   setSheet(doc);
   setStatus("working");
-  doc.getRange("R2C2").setValue(new Date(e.year, e.month - 1, e.day));
+  setCell(2,2,new Date(e.year, e.month - 1, e.day));
   console.log(e);
   setConsumerKey(e.consumerKey);
   setConsumerSecret(e.consumerSecret);
@@ -444,7 +460,7 @@ function saveSetup(e) {
   }
   i = 0;
   for (const [key, value] of Object.entries(titles)) {
-    setCell(3, 2+i,value);
+    setCell(4, 2+i,value);
     i++;
   }
   setCell(1,1,"Sheet last synced: never");
@@ -550,7 +566,7 @@ function syncDate(date = new Date()) {
         (fieldName, column, value) => {
           console.log(`log ${fieldName}, ${column}, ${value}`);
           if (column >= 0) {
-            doc.getRange("R" + workingRow + "C" + (column + 1)).setValue(value);
+            setCell(workingRow,column+1,value);
           }
         }
       );
@@ -559,15 +575,36 @@ function syncDate(date = new Date()) {
   setStatus("Ready");
 }
 
+const manageTrigger = {
+  add: function(form) {
+    setStatus("Working");
+
+    switch (form.type) {
+      case "daily":
+        setStatus('daily');
+        ScriptApp.newTrigger(form.function)
+        .timeBased()
+        .everyDays(1)
+        .atHour(form.time)
+        .create();
+        setStatus("Ready");
+        break;
+    }
+  }
+};
+
+
 /*
   Calculates which row should be used for a particular date's data based on the user-provided earliest date that data can be from.
 */
 function rowFromDate(date) {
-  var dayMil = 1000 * 60 * 60 * 24;
+  const dayMil = 86400000;
   var firstDay = getSheet().getRange("R2C2").getValue();
   date = date - firstDay;
   date = (date - (date % dayMil)) / dayMil;
   return date + 5;
+
+
 }
 
 function forEachRequiredField(statsObj, fieldObj, apiFieldsNeeded, fieldFn) {
@@ -597,10 +634,8 @@ function forEachRequiredField(statsObj, fieldObj, apiFieldsNeeded, fieldFn) {
 
 function firstRun() {
   const doc = SpreadsheetApp.getActiveSpreadsheet();
-  const contentHTML = `
-<html>
-  <head>
-    <style>
+  const headHTML = `
+  <style>
       label, input {
       width:95%;
       }
@@ -616,9 +651,9 @@ function firstRun() {
         display: none;
       }
     </style>
-  </head>
-  <body>
-    Go to <a href="https://dev.fitbit.com/apps/new">https://dev.fitbit.com/apps/new</a></br></br>
+  `;
+  const bodyHTML = `
+  Go to <a href="https://dev.fitbit.com/apps/new">https://dev.fitbit.com/apps/new</a></br></br>
     Login and register a new app using the following details:</br></br>
     <div class="box" id="hider">
       Only the options that must have specific values are shown below.</br>
@@ -668,12 +703,8 @@ function firstRun() {
       <input class="normWid" type="button" value="Next" onclick="google.script.run.withSuccessHandler(function(value){}).submitData(form);document.getElementById('done').style.display = 'block';">
     </form>
     <p id="done" style="display:none;">Please wait!</p>
-    
-  </body>
-</html>`;
-  const app = HtmlService.createHtmlOutput()
-    .setTitle("Setup: FitBit App")
-    .setContent(contentHTML);
+  `;
+  const app = HtmlService.createHtmlOutput().setTitle("Setup Fitbit App").setContent(defaultHTML(headHTML, bodyHTML));
   doc.show(app);
 }
 
@@ -729,14 +760,6 @@ function setup() {
       }
       input, select {
         text-align: right;
-      }
-      input, select {
-        border-style: solid;
-        border-color: #00B0B9;
-        border-radius: 12px;
-        border-width: medium;
-        backgroud-color: #86F9FF;
-        padding: 6px 12px;
       }
       .half {
         width: 50%;
@@ -898,8 +921,37 @@ function problemPrompt(problem = "Undefined problem.",) {
   doc.show(app);
 }
 
-//Will follow
-function addTrigger() {return;}
+function addTrigger() {
+  const availableFunctions = ['sync', 'syncYesterday']
+  var bodyHTML  = `
+    <form id="form">
+      <input type="hidden" id="task" name="task" value="addTrigger">
+      <label>Function: </label>
+      <select id="function" name="function">
+        ${availableFunctions.map(fn => `<option value="${fn}">${fn}</option>`).join('')}
+      </select></br>
+      <label>At what time? (hh): </label>
+      <input type="text" maxlength="2" size="2" id="time" name="time" value="">
+      <fieldset>
+        <legend>Select a Type</legend>
+        <div>
+          <input type="radio" id="daily" name="type" value="daily" checked />
+          <label for="daily">Daily</label>
+        </div>
+      </fieldset>
+      <input type="button" value="Submit" onclick="google.script.run.withSuccessHandler(function(value){}).submitData(form);
+          document.getElementById('form').style.display === 'none';
+          document.getElementById('done').style.display = 'block';
+      ">
+    </form>
+    <p id="done" style="display:none;">Done! Close the window!</p>
+  `;
+
+  var doc = SpreadsheetApp.getActiveSpreadsheet();
+  var app = HtmlService.createHtmlOutput().setTitle("Add a new Trigger").setContent(defaultHTML('',bodyHTML));
+  doc.show(app);
+  return;
+}
 
 // function onOpen is called when the spreadsheet is opened; adds the Fitbit menu
 function onOpen() {
