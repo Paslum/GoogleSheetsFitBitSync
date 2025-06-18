@@ -200,18 +200,94 @@ const allFields = Object.values(apiDefinitions)
 
 /* * * * * * * * * * * End of API Definitions * * * * * * * * * * * * */
 
-function setCell(row, column, value) {
-  try {
-    var doc = SpreadsheetApp.openById(getProperty("spreadSheetID"));
-    doc.getRange(`R${row}C${column}`).setBackground("green");
-    doc.getRange(`R${row}C${column}`).setValue(value);
-    console.info(`Cell R${row}C${column} has been set`);
-    doc.getRange(`R${row}C${column}`).setBackground("white");
-  } catch (err) {
-    console.error(`Cell R${row}C${column} could not be set: ${err}`);
-  }
-  return;
+function getProperty(key) {
+  Logger.log("get property " + key);
+  return PropertiesService.getScriptProperties().getProperty(key);
 }
+/*
+
+*/
+function setProperty(key, value) {
+  PropertiesService.getScriptProperties().setProperty(key, value);
+}
+
+function setSheet(sheet) {
+  setProperty("sheetID", sheet ? sheet.getSheetId().toString() : '');
+  setProperty("spreadSheetID", sheet ? sheet.getParent().getId().toString() : '');
+}
+
+const manageSpreadsheet = {
+  spreadSheetId : getProperty("spreadSheetID"),
+  cell: function(row, column) {
+    const cellString = `R${row}C${column}`;
+    const doc = SpreadsheetApp.openById(this.spreadSheetId);
+    return {
+      set: function(value) {
+        try {
+          this.setBackground("green");
+          doc.getRange(cellString).setValue(value);
+          console.info(`Cell R${cellString} has been set`);
+          this.setBackground("white");
+        } catch (err) {
+          console.error(`Cell ${cellString} could not be set: ${err}`);
+        };
+      },
+      get: function() {
+      },
+      setBackground: function(color) {
+        doc.getRange(cellString).setBackground(color);
+      }
+    };
+  },
+  status : {
+    set: function(status  = "unknown") {
+      manageSpreadsheet.cell(3,2).set(status);
+    },
+    get: function(){}
+  },
+};
+
+const consumer = {
+  key: {
+    set: function(key) {
+      setProperty(CONSUMER_KEY_PROPERTY_NAME, key);
+    },
+    get: function() {
+      return getProperty(CONSUMER_KEY_PROPERTY_NAME) || '';
+    }
+  },
+  secret: {
+    set: function(secret) {
+      setProperty(CONSUMER_SECRET_PROPERTY_NAME, secret);
+    },
+    get: function() {
+      return getProperty(CONSUMER_SECRET_PROPERTY_NAME) || '';
+    }
+  }
+};
+
+/*
+
+*/
+function getSheet() {
+  try {
+    var spreadSheetID = getProperty("spreadSheetID");
+    console.log(spreadSheetID);
+    var spreadSheet = SpreadsheetApp.openById(spreadSheetID.toString());
+    var sheetID = getProperty("sheetID");
+    var sheet = spreadSheet.getSheets().filter(function (s) {
+      return s.getSheetId().toString() === sheetID.toString();
+    })[0];
+    return sheet;
+  } catch (error) {
+    return null;
+  }
+}
+
+/*
+
+*/
+
 
 function defaultHTML(head, body) {
   return `
@@ -239,97 +315,19 @@ function defaultHTML(head, body) {
   </html>
   `;
 }
-
-/*
-  Used to display information to the user via cell B3 to let them know that scripts are actively running.
-*/
-function setStatus(currentStatus = "unknown") {
-  setCell(3,2,currentStatus);
-}
 /*
 
 */
 function isConfigured() {
-  return getConsumerKey() != "" && getConsumerSecret() != "";
-}
-
-/*
-
-*/
-function getProperty(key) {
-  Logger.log("get property " + key);
-  return PropertiesService.getScriptProperties().getProperty(key);
-}
-
-/*
-
-*/
-function setProperty(key, value) {
-  PropertiesService.getScriptProperties().setProperty(key, value);
-}
-
-/*
-
-*/
-function getSheet() {
-  try {
-    var spreadSheetID = getProperty("spreadSheetID");
-    console.log(spreadSheetID);
-    var spreadSheet = SpreadsheetApp.openById(spreadSheetID.toString());
-    var sheetID = getProperty("sheetID");
-    var sheet = spreadSheet.getSheets().filter(function (s) {
-      return s.getSheetId().toString() === sheetID.toString();
-    })[0];
-    return sheet;
-  } catch (error) {
-    return null;
-  }
-}
-
-/*
-
-*/
-function setSheet(sheet) {
-  setProperty("sheetID", sheet ? sheet.getSheetId().toString() : '');
-  setProperty("spreadSheetID", sheet ? sheet.getParent().getId().toString() : '');
-}
-
-/*
-
-*/
-function setConsumerKey(consumerKey) {
-  setProperty(CONSUMER_KEY_PROPERTY_NAME, consumerKey);
-}
-
-/*
-
-*/
-function getConsumerKey() {
-  var consumer = getProperty(CONSUMER_KEY_PROPERTY_NAME);
-  return consumer ? consumer : '';
-}
-
-/*
-
-*/
-function setConsumerSecret(secret) {
-  setProperty(CONSUMER_SECRET_PROPERTY_NAME, secret);
-}
-
-/*
-
-*/
-function getConsumerSecret() {
-  var secret = getProperty(CONSUMER_SECRET_PROPERTY_NAME);
-  return secret ? secret : '';
+  return consumer.key.get() && consumer.secret.get();
 }
 
 function clearService() {
   OAuth2.createService(SERVICE_IDENTIFIER)
     .setPropertyStore(PropertiesService.getUserProperties())
     .reset();
-  setConsumerKey("");
-  setConsumerSecret("");
+  consumer.key.set("");
+  consumer.secret.set("");
   setSheet(null);
 }
 
@@ -427,11 +425,11 @@ function saveSetup(e) {
   })[0];
   //problemPrompt("'"+e.sheetID+"'");
   setSheet(doc);
-  setStatus("working");
-  setCell(2,2,new Date(e.year, e.month - 1, e.day));
+  manageSpreadsheet.status.set("Working");
+  manageSpreadsheet.cell(2,2).set(new Date(e.year, e.month - 1, e.day));
   console.log(e);
-  setConsumerKey(e.consumerKey);
-  setConsumerSecret(e.consumerSecret);
+  consumer.key.set(e.consumerKey);
+  consumer.secret.set(e.consumerSecret);
   var i = 2;
   var cell = doc.getRange("R4C2");
   var titles = [];
@@ -460,15 +458,15 @@ function saveSetup(e) {
   }
   i = 0;
   for (const [key, value] of Object.entries(titles)) {
-    setCell(4, 2+i,value);
+    manageSpreadsheet.cell(4,2+i).set(value);
     i++;
   }
-  setCell(1,1,"Sheet last synced: never");
-  setCell(2,1,"Start Date:");
-  setCell(3,1,"Status:");
-  setCell(4,1,"Date");
+  manageSpreadsheet.cell(1,1).set("Sheet last synced: never");
+  manageSpreadsheet.cell(2,1).set("Start Date:");
+  manageSpreadsheet.cell(3,1).set("Status:");
+  manageSpreadsheet.cell(4,1).set("Date");
   authWindow();
-  setStatus("Ready");
+  manageSpreadsheet.status.set("Ready");
 }
 /*
 
@@ -515,7 +513,7 @@ function syncMany(firstDate, secondDate) {
   function sync() is called to download all desired data from Fitbit API to the spreadsheet
 */
 function syncDate(date = new Date()) {
-  setStatus("working");
+  manageSpreadsheet.status.set("Working");
   var dateString = Utilities.formatDate(date, Session.getScriptTimeZone(), 'yyyy-MM-dd');
   var doc = getSheet();
   var workingRow = rowFromDate(date);
@@ -523,21 +521,21 @@ function syncDate(date = new Date()) {
     problemPrompt(
       "The date given is before your defined Earliest Date. Extending before this date is not supported and causes problems."
     );
-    setStatus("Ready");
+    manageSpreadsheet.status.set("Ready");
     return;
   }
-  setStatus("Working row: " + workingRow);
+  manageSpreadsheet.status.set("Working row: " + workingRow);
 
   doc.setFrozenRows(4);
-  setCell(1,1,"Sheet last synced: " + new Date());
-  setCell(4,1,"Date");
+  manageSpreadsheet.cell(1,1).set("Sheet last synced: " + new Date());
+  manageSpreadsheet.cell(4,1).set("Date");
   var options = {
     headers: {
       Authorization: "Bearer " + getFitbitService().getAccessToken(),
       method: "GET",
     },
   };
-  setCell(workingRow,1,dateString);
+  manageSpreadsheet.cell(workingRow,1).set(dateString);
 
   const allFieldsUsed = doc.getRange("4:4").getValues()[0];
 
@@ -566,28 +564,27 @@ function syncDate(date = new Date()) {
         (fieldName, column, value) => {
           console.log(`log ${fieldName}, ${column}, ${value}`);
           if (column >= 0) {
-            setCell(workingRow,column+1,value);
+            manageSpreadsheet.cell(workingRow,column+1).set(value);
           }
         }
       );
     }
   });
-  setStatus("Ready");
+  manageSpreadsheet.status.set("Ready");
 }
 
 const manageTrigger = {
   add: function(form) {
-    setStatus("Working");
+    manageSpreadsheet.status.set("Working");
 
     switch (form.type) {
       case "daily":
-        setStatus('daily');
         ScriptApp.newTrigger(form.function)
         .timeBased()
         .everyDays(1)
         .atHour(form.time)
         .create();
-        setStatus("Ready");
+        manageSpreadsheet.status.set("Ready");
         break;
     }
   }
